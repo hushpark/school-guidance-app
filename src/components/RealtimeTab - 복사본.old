@@ -1,0 +1,544 @@
+import React, { useState, useRef } from 'react';
+import { supabase } from '../lib/supabase';
+import type { Student, Penalty, PhotoConfig } from '../types';
+
+interface RealtimeTabProps {
+  students: Student[];
+  penalties: Penalty[];
+  inputStudentId: string;
+  matchedStudent: Student | null;
+  isSubmitting: boolean;
+  onInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onSelectStudent?: (student: Student) => void;
+  onAddPenalty: (e: React.FormEvent) => void;
+  onDeletePenalty?: (id: string) => void;
+  studentPenaltyCounts: Record<string, { count: number; first7thDate?: string }>;
+  focusThreshold?: number;
+  userRole?: string;
+  photoConfig?: PhotoConfig;
+}
+
+export const RealtimeTab: React.FC<RealtimeTabProps> = ({
+  students,
+  penalties,
+  inputStudentId,
+  matchedStudent,
+  isSubmitting,
+  onInputChange,
+  onSelectStudent,
+  onAddPenalty,
+  onDeletePenalty,
+  studentPenaltyCounts,
+  focusThreshold = 7,
+  userRole = 'teacher',
+  photoConfig = 'allow_toggle',
+}) => {
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // 🖼️ 개별 토글용 상태
+  const [userTogglePhoto, setUserTogglePhoto] = useState<boolean>(true);
+
+  // 🔍 팝업 모달 확대를 위한 학생 정보 상태
+  const [modalStudent, setModalStudent] = useState<Student | null>(null);
+
+  // 📅 과거 날짜 내역 등록 팝업 모달 상태
+  const [isRetroModalOpen, setIsRetroModalOpen] = useState<boolean>(false);
+  const getTodayFormatted = () => new Date().toISOString().split('T')[0];
+  const [retroDate, setRetroDate] = useState<string>(getTodayFormatted());
+  const [retroBatchText, setRetroBatchText] = useState<string>('');
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // ⚡ 관리자 전역 설정(photoConfig) 및 개별 토글 통합 계산
+  const isPhotoVisible = 
+    photoConfig === 'always_on' ? true :
+    photoConfig === 'always_off' ? false :
+    userTogglePhoto;
+
+  // 🔘 자율 토글 모드일 때만 스위치 버튼 노출
+  const canToggle = photoConfig === 'allow_toggle' && (userRole === 'admin' || userRole === 'manager' || userRole === 'teacher');
+
+  const searchKeyword = inputStudentId.trim();
+  const searchResults = searchKeyword
+    ? students.filter(
+      (s) => s.id.includes(searchKeyword) || s.name.includes(searchKeyword)
+    ).slice(0, 5)
+    : [];
+
+  const handleSelect = (s: Student) => {
+    if (onSelectStudent) {
+      onSelectStudent(s);
+    }
+    setIsDropdownOpen(false);
+  };
+
+  // 💡 동적 호스트 기반 프로필 사진 URL 생성
+  const getStudentPhotoUrl = (student: Student) => {
+    const currentHost = typeof window !== 'undefined' ? window.location.host : 'localhost:5173';
+    if (student.photoUrl && (student.photoUrl.startsWith('http://') || student.photoUrl.startsWith('https://'))) {
+      return student.photoUrl;
+    }
+    const path = student.photoUrl || `/photos/${student.id}.jpg`;
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    return `http://${currentHost}${cleanPath}`;
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!matchedStudent || isSubmitting) return;
+
+    const studentName = matchedStudent.name;
+
+    onAddPenalty(e);
+
+    setToastMessage(`⚡ ${studentName} 등록 완료!`);
+    setTimeout(() => setToastMessage(null), 1800);
+
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+    }, 50);
+  };
+
+  // 📥 과거 날짜 단속 내역 등록
+  const handleBatchRetroSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!retroBatchText.trim()) {
+      alert('등록할 학번 또는 이름을 입력해 주세요.');
+      return;
+    }
+
+    const lines = retroBatchText
+      .split(/\r\n|\n|\r/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    const payload: any[] = [];
+    let successCount = 0;
+    let failCount = 0;
+
+    const customTimestamp = `${retroDate}T12:00:00+09:00`;
+
+    lines.forEach((line) => {
+      const tokens = line.split(/[\t,\s]+/).map((t) => t.trim()).filter((t) => t.length > 0);
+      tokens.forEach((token) => {
+        const found = students.find((s) => s.id === token || s.name === token);
+        if (found) {
+          payload.push({
+            student_id: found.id,
+            grade: found.grade,
+            created_at: customTimestamp,
+          });
+          successCount++;
+        } else {
+          failCount++;
+        }
+      });
+    });
+
+    if (payload.length === 0) {
+      alert('일치하는 학생 정보를 찾을 수 없습니다. 학번/이름을 확인해 주세요.');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.from('penalties').insert(payload);
+      if (error) {
+        alert('과거 내역 등록 중 오류가 발생했습니다.');
+        return;
+      }
+
+      setToastMessage(`🎉 과거 단속 총 ${successCount}건 등록 완료! (${retroDate})`);
+      setTimeout(() => setToastMessage(null), 2000);
+
+      setRetroBatchText('');
+      setIsRetroModalOpen(false);
+
+      if (failCount > 0) {
+        alert(`총 ${successCount}건 등록 완료! (미인식/일치하지 않는 학번 ${failCount}건 제외됨)`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('등록 실패');
+    }
+  };
+
+  const todayStr = new Date().toLocaleDateString('sv-SE');
+  const todayPenalties = penalties.filter((p) => {
+    return new Date(p.created_at).toLocaleDateString('sv-SE') === todayStr;
+  });
+
+  const intensiveStudents = Object.entries(studentPenaltyCounts)
+    .filter(([_, data]) => data.count >= focusThreshold)
+    .map(([studentId, data]) => {
+      const student = students.find((s) => s.id === studentId);
+      return { student, count: data.count };
+    })
+    .filter((item): item is { student: Student; count: number } => item.student !== undefined);
+
+  return (
+    // ✨ items-stretch 속성으로 1열, 2열, 3열 카드의 높이를 1열 카드 기준으로 완전히 정렬
+    <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-5 items-stretch relative">
+
+      {toastMessage && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-emerald-400 font-extrabold text-xs px-5 py-3 rounded-2xl shadow-2xl border border-emerald-500/30 flex items-center gap-2 backdrop-blur-md animate-in fade-in slide-in-from-top-3 duration-150">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* 👈 1. [단속 입력 카드] (기준 카드가 됨) */}
+      <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm space-y-4 flex flex-col justify-between h-full">
+        
+        <div className="space-y-4">
+          {/* 상단 타이틀 헤더 */}
+          <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+            <div className="flex items-center gap-2 text-slate-800 min-w-0">
+              <span className="text-lg shrink-0">🔍</span>
+              <h2 className="text-sm sm:text-base font-extrabold text-slate-800 tracking-tight truncate">
+                학생 빠른 검색 <span className="text-xs font-normal text-slate-500 hidden sm:inline">(학번/이름)</span>
+              </h2>
+            </div>
+
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsRetroModalOpen(true)}
+                className="text-[10px] font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 px-2 py-0.5 rounded-lg transition-all cursor-pointer whitespace-nowrap shadow-sm"
+                title="어제나 과거 날짜의 단속 내역을 등록합니다"
+              >
+                📅 과거 내역 등록
+              </button>
+
+              <span className="text-[10px] font-mono font-bold text-slate-500 bg-slate-100 border border-slate-200/80 px-2 py-0.5 rounded-md whitespace-nowrap">
+                오늘 {todayPenalties.length}건 완료
+              </span>
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-3.5 relative">
+            <div className="relative flex items-center">
+              <input
+                ref={inputRef}
+                type="text"
+                placeholder="학생 이름/학번 입력 후 [엔터]"
+                value={inputStudentId}
+                onChange={(e) => {
+                  onInputChange(e);
+                  setIsDropdownOpen(true);
+                }}
+                onFocus={() => setIsDropdownOpen(true)}
+                className={`w-full bg-slate-50 border-2 border-emerald-500 rounded-2xl pl-4 py-3.5 text-xs font-bold text-slate-800 placeholder-slate-400 focus:outline-none focus:bg-white focus:ring-4 focus:ring-emerald-500/10 transition-all shadow-inner ${
+                  canToggle ? 'pr-24' : 'pr-4'
+                }`}
+              />
+
+              {canToggle && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setUserTogglePhoto(!userTogglePhoto);
+                  }}
+                  className={`absolute right-2.5 text-[10px] font-bold px-2.5 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1 z-30 shadow-sm ${
+                    userTogglePhoto
+                      ? 'bg-emerald-500 text-white hover:bg-emerald-600 active:scale-95'
+                      : 'bg-slate-300 text-slate-700 hover:bg-slate-400 active:scale-95'
+                  }`}
+                  title="사진 표시/숨김 스위치"
+                >
+                  <span>{userTogglePhoto ? '🖼️ 사진 ON' : '🙈 사진 OFF'}</span>
+                </button>
+              )}
+
+              {isDropdownOpen && searchResults.length > 0 && (
+                <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-200 rounded-2xl shadow-xl z-20 overflow-hidden divide-y divide-slate-100">
+                  {searchResults.map((s) => (
+                    <div
+                      key={s.id}
+                      onClick={() => handleSelect(s)}
+                      className="p-2.5 hover:bg-emerald-50 cursor-pointer flex items-center justify-between transition-colors text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-extrabold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
+                          {s.id}
+                        </span>
+                        <span className="font-bold text-slate-900">{s.name}</span>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        {s.grade}학년 {s.classNum}반 {s.number}번
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 📸 학생 프로필 카드 */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 min-h-[160px] flex items-center justify-center relative">
+              {matchedStudent ? (
+                <div className="flex items-center gap-4 w-full animate-in fade-in duration-150">
+                  {isPhotoVisible && (
+                    <div
+                      onClick={() => setModalStudent(matchedStudent)}
+                      className="relative group cursor-pointer w-20 h-26 bg-white rounded-xl overflow-hidden border border-slate-200 shrink-0 shadow-sm flex items-center justify-center p-0.5"
+                      title="클릭 시 크게 보기"
+                    >
+                      <img
+                        src={getStudentPhotoUrl(matchedStudent)}
+                        alt={matchedStudent.name}
+                        className="w-full h-full object-cover object-top rounded-lg group-hover:scale-105 transition-all"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = `https://api.dicebear.com/7.x/bottts/svg?seed=${matchedStudent.id}`;
+                        }}
+                      />
+                      <div className="absolute inset-0 bg-slate-950/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-[10px] font-bold">
+                        🔍 확대
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`font-black text-slate-900 ${isPhotoVisible ? 'text-lg' : 'text-xl'}`}>
+                        {matchedStudent.name}
+                      </span>
+                      <span className="bg-slate-200 text-slate-700 text-xs font-bold font-mono px-2 py-0.5 rounded-md">
+                        {matchedStudent.id}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 font-medium">
+                      {matchedStudent.grade}학년 {matchedStudent.classNum}반 {matchedStudent.number}번
+                    </p>
+
+                    <div className="pt-0.5 flex items-center gap-1.5">
+                      <span className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-lg inline-block">
+                        🚨 누적: <b>{studentPenaltyCounts[matchedStudent.id]?.count || 0}회</b>
+                      </span>
+                      {(studentPenaltyCounts[matchedStudent.id]?.count || 0) >= focusThreshold && (
+                        <span className="text-amber-500 font-bold text-sm" title="집중지도 대상">⚠️</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center text-slate-400 text-xs font-medium space-y-1">
+                  <p className="text-base">⚡</p>
+                  <p>학생 이름/학번 입력 후 엔터를 누르면</p>
+                  <p>즉시 단속 정보가 등록됩니다.</p>
+                </div>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              disabled={!matchedStudent || isSubmitting}
+              className={`w-full font-bold py-3.5 rounded-2xl text-xs transition-all shadow-md flex items-center justify-center gap-1.5 ${matchedStudent && !isSubmitting
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20 active:scale-[0.98]'
+                  : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                }`}
+            >
+              <span>🚨</span>
+              <span>{isSubmitting ? '단속 정보 등록 중...' : '단속 등록 (Enter)'}</span>
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {/* 👉 2. 오늘 단속 명단 (1열과 세로 높이 완전 통일) */}
+      <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm flex flex-col justify-between h-full min-h-0">
+        <div className="flex justify-between items-center border-b border-slate-100 pb-2.5 shrink-0">
+          <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+            <span>📋</span> 오늘 단속 명단
+          </h2>
+          <span className="text-xs font-mono font-bold text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
+            {todayPenalties.length}건
+          </span>
+        </div>
+
+        {todayPenalties.length > 0 ? (
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-0 my-2">
+            {todayPenalties.map((p) => {
+              const student = students.find((s) => s.id === p.student_id);
+              const timeStr = new Date(p.created_at).toLocaleTimeString('ko-KR', {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+
+              return (
+                <div
+                  key={p.id}
+                  className="bg-slate-50 border border-slate-100 rounded-2xl p-2.5 flex items-center justify-between hover:bg-slate-100/80 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs font-extrabold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-md">
+                      {p.student_id}
+                    </span>
+                    <span className="text-xs font-bold text-slate-900">
+                      {student ? student.name : '학생 정보 없음'}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono">{timeStr}</span>
+                  </div>
+
+                  {onDeletePenalty && (
+                    <button
+                      onClick={() => onDeletePenalty(p.id)}
+                      className="text-xs text-rose-400 hover:text-rose-600 hover:bg-rose-50 p-1 rounded-lg transition-all cursor-pointer"
+                      title="단속 내역 삭제"
+                    >
+                      🗑️
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-slate-400 text-xs font-medium">
+            오늘 단속된 내역이 없습니다.
+          </div>
+        )}
+      </div>
+
+      {/* 👉 3. ⚠️ 규정위반 집중지도 명단 (1열과 세로 높이 완전 통일) */}
+      <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm flex flex-col justify-between h-full min-h-0">
+        <div className="flex justify-between items-center border-b border-slate-100 pb-2.5 shrink-0">
+          <h2 className="text-sm font-bold text-amber-700 flex items-center gap-1.5">
+            <span>⚠️</span> 규정위반 집중지도 명단({focusThreshold}회 이상)
+          </h2>
+          <span className="text-xs font-mono font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+            {intensiveStudents.length}명
+          </span>
+        </div>
+
+        {intensiveStudents.length > 0 ? (
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-0 my-2">
+            {intensiveStudents.map(({ student, count }) => (
+              <div
+                key={student.id}
+                className="bg-amber-50/50 border border-amber-100 rounded-2xl p-2.5 flex items-center justify-between"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-amber-500 font-bold">⚠️</span>
+                  <span className="font-mono text-xs font-extrabold text-indigo-600">
+                    {student.id}
+                  </span>
+                  <span className="text-xs font-bold text-slate-900">{student.name}</span>
+                </div>
+                <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-lg">
+                  {count}회 지도
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-slate-400 text-xs font-medium">
+            대상 학생이 없습니다.
+          </div>
+        )}
+      </div>
+
+      {/* 📅 과거 날짜 내역 등록 팝업 모달 */}
+      {isRetroModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl p-5 max-w-md w-full space-y-3.5 shadow-2xl animate-in zoom-in-95 duration-150 relative">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-2.5">
+              <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+                <span>📅</span> 과거 단속 내역 등록
+              </h3>
+              <button
+                onClick={() => setIsRetroModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 font-bold text-xs cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleBatchRetroSubmit} className="space-y-3">
+              <div className="flex items-center justify-between bg-amber-50/70 border border-amber-200 rounded-xl p-2.5">
+                <span className="text-xs font-bold text-amber-900 whitespace-nowrap">단속 발생 일자</span>
+                <input
+                  type="date"
+                  value={retroDate}
+                  onChange={(e) => setRetroDate(e.target.value)}
+                  className="bg-white border border-amber-300 rounded-lg px-2 py-1 text-xs font-bold text-slate-900 focus:outline-none focus:border-amber-500 shadow-sm cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-700">
+                  학번 또는 이름 (여러 명 붙여넣기 가능)
+                </label>
+                <textarea
+                  rows={5}
+                  placeholder={`[예시: 1명 또는 여러 명 입력 가능]\n10101\n10102\n홍길동\n이순신`}
+                  value={retroBatchText}
+                  onChange={(e) => setRetroBatchText(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs font-mono font-bold leading-relaxed focus:outline-none focus:border-amber-500 resize-none"
+                  autoFocus
+                />
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsRetroModalOpen(false)}
+                  className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-xs transition-all cursor-pointer"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-bold py-2.5 rounded-xl text-xs transition-all cursor-pointer shadow-md"
+                >
+                  🚀 과거 내역 등록하기
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 🔍 사진 대형 확대 팝업 모달 */}
+      {modalStudent && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 max-w-sm w-full space-y-5 shadow-2xl animate-in zoom-in-95 duration-150 relative text-center">
+            <button
+              onClick={() => setModalStudent(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-700 font-bold text-sm cursor-pointer"
+            >
+              ✕
+            </button>
+
+            <img
+              src={getStudentPhotoUrl(modalStudent)}
+              alt={modalStudent.name}
+              onError={(e) => {
+                const target = e.target as HTMLImageElement;
+                target.src = `https://api.dicebear.com/7.x/bottts/svg?seed=${modalStudent.id}`;
+              }}
+              className="w-36 h-48 rounded-3xl object-cover object-top mx-auto border-2 border-emerald-500 shadow-md"
+            />
+
+            <div className="space-y-1">
+              <h3 className="text-2xl font-black text-slate-900">{modalStudent.name}</h3>
+              <p className="text-sm font-medium text-slate-600">
+                {modalStudent.grade}학년 {modalStudent.classNum}반 {modalStudent.number}번 ({modalStudent.id})
+              </p>
+            </div>
+
+            <button
+              onClick={() => setModalStudent(null)}
+              className="w-full bg-slate-900 text-white font-bold py-3 rounded-2xl text-xs hover:bg-slate-800 transition-all cursor-pointer"
+            >
+              닫기
+            </button>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+};

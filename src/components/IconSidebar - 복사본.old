@@ -1,0 +1,148 @@
+import React from 'react';
+import type { MainTab, SchoolBranding } from '../types';
+
+export type UserRole = 'admin' | 'manager' | 'teacher';
+
+interface IconSidebarProps {
+  role: UserRole;
+  activeTab: MainTab;
+  setActiveTab: (tab: MainTab) => void;
+  schoolBranding?: SchoolBranding;
+  isExternalAccess?: boolean; // 🔒 외부망 접속 여부 (기본값: false)
+}
+
+export const IconSidebar: React.FC<IconSidebarProps> = ({
+  role,
+  activeTab,
+  setActiveTab,
+  schoolBranding,
+  isExternalAccess = false,
+}) => {
+  // 🔒 권한 및 내부/외부망 접속 조건에 따른 메인 메뉴 제어 (4번, 5번 순서 변경 완료)
+  const mainNavItems = [
+    { 
+      id: 'realtime', 
+      label: '실시간 생활지도', 
+      icon: '⚡', 
+      show: role !== 'teacher' 
+    },
+    { 
+      id: 'photoSearch', 
+      label: '학생 사진/정보 조회', 
+      icon: '🔍', 
+      show: !isExternalAccess 
+    },
+    { 
+      id: 'classGrid', 
+      label: '반별 / 기준별 누적 명단', 
+      icon: '📊', 
+      show: !isExternalAccess 
+    },
+    { 
+      id: 'studentManage', 
+      label: '학생 명단 관리', 
+      icon: '✍️', 
+      // [4번 메뉴로 이동] 관리자 + 내부망 전용
+      show: role === 'admin' && !isExternalAccess 
+    },
+    { 
+      id: 'teacherManage', 
+      label: '교사 계정 관리', 
+      icon: '🔑', 
+      // [5번 메뉴로 이동] 관리자 전용
+      show: role === 'admin' 
+    },
+    { 
+      id: 'systemConfig', 
+      label: '시스템 & 진급 설정', 
+      icon: '⚙️', 
+      show: role === 'admin' && !isExternalAccess 
+    },
+  ];
+
+  // 7. 사용 가이드 (도움말) - 내부망 전용
+  const helpItem = { 
+    id: 'helpGuide', 
+    label: '사용 가이드', 
+    icon: '❓',
+    show: !isExternalAccess 
+  };
+
+  const isTransparent = !schoolBranding?.logoBgColor || schoolBranding.logoBgColor === 'transparent';
+
+  return (
+    <div className="w-16 bg-[#0f172a] h-screen flex flex-col items-center py-5 border-r border-slate-800 shrink-0 z-20 justify-between">
+      
+      {/* 🔝 상단 로고 */}
+      <div className="w-full flex flex-col items-center">
+        <div className="mb-6">
+          <div
+            className={`w-11 h-11 flex items-center justify-center text-xl ${
+              isTransparent
+                ? 'bg-transparent border-none shadow-none p-0'
+                : 'rounded-2xl border border-slate-700/50 shadow-sm p-0.5'
+            }`}
+            style={{
+              backgroundColor: isTransparent ? 'transparent' : schoolBranding?.logoBgColor,
+            }}
+          >
+            {schoolBranding?.logoType === 'emoji' ? (
+              <span>{schoolBranding?.logoValue || '🛡️'}</span>
+            ) : schoolBranding?.logoValue ? (
+              <img
+                src={schoolBranding.logoValue}
+                alt="학교 로고"
+                className="w-full h-full object-contain rounded-lg"
+              />
+            ) : (
+              <span>🛡️</span>
+            )}
+          </div>
+        </div>
+
+        {/* 메인 메뉴 버튼들 */}
+        <div className="space-y-3.5 w-full px-2 flex flex-col items-center">
+          {mainNavItems
+            .filter((item) => item.show)
+            .map((item) => {
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveTab(item.id as MainTab)}
+                  className={`w-11 h-11 rounded-2xl flex items-center justify-center text-xl cursor-pointer transition-colors ${
+                    isActive
+                      ? 'bg-slate-800 text-emerald-400 font-bold border border-slate-700 shadow-md'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800/40'
+                  }`}
+                  title={item.label}
+                >
+                  <span>{item.icon}</span>
+                </button>
+              );
+            })}
+        </div>
+      </div>
+
+      {/* ⬇️ 하단 사용 가이드 */}
+      {helpItem.show && (
+        <div className="w-full px-2 flex justify-center">
+          <button
+            onClick={() => setActiveTab(helpItem.id as MainTab)}
+            className={`w-11 h-11 rounded-2xl flex items-center justify-center text-xl cursor-pointer transition-colors ${
+              activeTab === helpItem.id
+                ? 'bg-slate-800 text-rose-400 font-bold border border-slate-700 shadow-md'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/40'
+            }`}
+            title={helpItem.label}
+          >
+            <span>{helpItem.icon}</span>
+          </button>
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+export default IconSidebar;

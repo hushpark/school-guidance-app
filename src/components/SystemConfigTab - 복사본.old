@@ -1,0 +1,1005 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { supabase, clearSupabaseConfig } from '../lib/supabase';
+import type { Student, ClassCounts, SchoolBranding, PhotoConfig, BlockExternalAccessConfig } from '../types';
+import { saveStoredStudents } from '../utils/studentStorage';
+
+interface SystemConfigTabProps {
+  students: Student[];
+  classCounts: ClassCounts;
+  warningThreshold: number;
+  focusThreshold: number;
+  schoolBranding: SchoolBranding;
+  photoConfig: PhotoConfig;
+  onClassCountChange: (grade: number, count: number) => void;
+  onThresholdChange: (warning: number, focus: number) => void;
+  onStudentsUpdated: (newStudents: Student[]) => void;
+  onResetPenalties: () => void;
+  onSchoolBrandingChange: (branding: SchoolBranding) => void;
+  onPhotoConfigChange: (config: PhotoConfig) => void;
+  rulesPdfUrl?: string;
+  onUpdateRulesPdfUrl?: (url: string) => void;
+}
+
+interface PromotionResult {
+  oldId: string;
+  newId: string;
+  name: string;
+}
+
+const PRESET_COLORS = [
+  'transparent',
+  '#ffffff',
+  '#d1fae5',
+  '#dbeafe',
+  '#fef3c7',
+  '#fce7f3',
+];
+
+export const SystemConfigTab: React.FC<SystemConfigTabProps> = ({
+  students,
+  classCounts,
+  warningThreshold,
+  focusThreshold,
+  schoolBranding,
+  photoConfig,
+  onClassCountChange,
+  onThresholdChange,
+  onStudentsUpdated,
+  onResetPenalties,
+  onSchoolBrandingChange,
+  onPhotoConfigChange,
+  rulesPdfUrl,
+  onUpdateRulesPdfUrl,
+}) => {
+  const [warningInput, setWarningInput] = useState(warningThreshold);
+  const [focusInput, setFocusInput] = useState(focusThreshold);
+
+  const [schoolNameInput, setSchoolNameInput] = useState(schoolBranding.schoolName);
+  const [logoTypeInput, setLogoTypeInput] = useState<'emoji' | 'image' | 'file'>(schoolBranding.logoType || 'emoji');
+  const [logoValueInput, setLogoValueInput] = useState(schoolBranding.logoValue);
+  const [logoBgColorInput, setLogoBgColorInput] = useState<string>(schoolBranding.logoBgColor || 'transparent');
+
+  const [autoLaunch, setAutoLaunch] = useState<boolean>(false);
+  const [startHidden, setStartHidden] = useState<boolean>(false);
+
+  const [isPromotionModalOpen, setIsPromotionModalOpen] = useState<boolean>(false);
+
+  const [addressType, setAddressType] = useState<'dynamic' | 'fixed'>(schoolBranding.addressType || 'dynamic');
+  const [cloudflareToken, setCloudflareToken] = useState<string>(schoolBranding.cloudflareToken || '');
+
+  const [blockAccess, setBlockAccess] = useState<BlockExternalAccessConfig>({
+    teacher: schoolBranding.blockExternalAccess?.teacher ?? true,
+    manager: schoolBranding.blockExternalAccess?.manager ?? false,
+    leadership: schoolBranding.blockExternalAccess?.leadership ?? false,
+    admin: schoolBranding.blockExternalAccess?.admin ?? false,
+  });
+
+  const [useTimeLimit, setUseTimeLimit] = useState<boolean>(schoolBranding.useTimeLimit ?? true);
+  const [startTime, setStartTime] = useState<string>(schoolBranding.timeLimitStart || '07:30');
+  const [endTime, setEndTime] = useState<string>(schoolBranding.timeLimitEnd || '08:30');
+  const [afterTimePolicy, setAfterTimePolicy] = useState<'block_all' | 'admin_only'>(
+    schoolBranding.afterTimePolicy || 'admin_only'
+  );
+  const [adminOverrideSwitch, setAdminOverrideSwitch] = useState<boolean>(
+    schoolBranding.adminOverrideSwitch ?? true
+  );
+
+  const colorInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if ((window as any).electronAPI?.getAutoLaunchState) {
+      (window as any).electronAPI.getAutoLaunchState().then((state: any) => {
+        if (state) {
+          setAutoLaunch(state.openAtLogin);
+          setStartHidden(state.openAsHidden);
+        }
+      });
+    }
+  }, []);
+
+  const saveConfigToSupabase = async (key: string, value: any) => {
+    try {
+      const stringValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      const { error } = await supabase.from('settings').upsert(
+        {
+          key: key,
+          value: stringValue,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+      if (error) console.warn('settings 테이블 저장 참고:', error.message);
+    } catch (err) {
+      console.error('DB 동기화 오류:', err);
+    }
+  };
+
+  const handleAutoLaunchToggle = async (enabled: boolean) => {
+    setAutoLaunch(enabled);
+    if ((window as any).electronAPI?.setAutoLaunch) {
+      await (window as any).electronAPI.setAutoLaunch(enabled, startHidden);
+    }
+  };
+
+  const handleStartHiddenToggle = async (hidden: boolean) => {
+    setStartHidden(hidden);
+    if ((window as any).electronAPI?.setAutoLaunch) {
+      await (window as any).electronAPI.setAutoLaunch(autoLaunch, hidden);
+    }
+  };
+
+  const handleResetDbConfig = () => {
+    if (confirm('🔑 현재 연동된 Supabase DB Key를 삭제하고 초기화하시겠습니까?')) {
+      clearSupabaseConfig();
+    }
+  };
+
+  const updateRealtimeBranding = (field: Partial<SchoolBranding>) => {
+    const updated: SchoolBranding = {
+      ...schoolBranding,
+      schoolName: field.schoolName !== undefined ? field.schoolName : schoolNameInput,
+      logoType: field.logoType !== undefined ? field.logoType : logoTypeInput,
+      logoValue: field.logoValue !== undefined ? field.logoValue : logoValueInput,
+      logoBgColor: field.logoBgColor !== undefined ? field.logoBgColor : logoBgColorInput,
+    };
+    onSchoolBrandingChange(updated);
+  };
+
+  const handleToggleBlockGroup = (groupKey: keyof BlockExternalAccessConfig) => {
+    setBlockAccess((prev) => ({
+      ...prev,
+      [groupKey]: !prev[groupKey],
+    }));
+  };
+
+  const handleSaveNetworkSettings = () => {
+    const updatedBranding: SchoolBranding = {
+      ...schoolBranding,
+      addressType,
+      cloudflareToken,
+      useTimeLimit,
+      timeLimitStart: startTime,
+      timeLimitEnd: endTime,
+      afterTimePolicy,
+      adminOverrideSwitch,
+      blockExternalAccess: blockAccess,
+    };
+
+    onSchoolBrandingChange(updatedBranding);
+    saveConfigToSupabase('school_branding', updatedBranding);
+    alert('🎉 외부 접속 제어 및 보안 설정이 성공적으로 저장되었습니다!');
+  };
+
+  const openColorPicker = () => {
+    const el = colorInputRef.current;
+    if (el) {
+      if ('showPicker' in el && typeof (el as any).showPicker === 'function') {
+        try { (el as any).showPicker(); } catch { el.click(); }
+      } else {
+        el.click();
+      }
+    }
+  };
+
+  const [promotionText, setPromotionText] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [appliedPromotionResults, setAppliedPromotionResults] = useState<PromotionResult[]>([]);
+
+  const handlePdfFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      alert('⚠️ PDF 파일만 업로드할 수 있습니다.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      if (onUpdateRulesPdfUrl) {
+        onUpdateRulesPdfUrl(result);
+        saveConfigToSupabase('rules_pdf_url', result);
+        alert('🎉 학생 생활 지도 규정 PDF가 성공적으로 등록되었습니다!');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleDeletePdf = () => {
+    if (confirm('📜 등록된 학생 생활 지도 규정 PDF를 삭제하시겠습니까?')) {
+      if (onUpdateRulesPdfUrl) {
+        onUpdateRulesPdfUrl('');
+        saveConfigToSupabase('rules_pdf_url', '');
+        alert('삭제되었습니다.');
+      }
+    }
+  };
+
+  const handleSaveBranding = () => {
+    const updated: SchoolBranding = {
+      ...schoolBranding,
+      schoolName: schoolNameInput.trim() || '양현고등학교',
+      logoType: logoTypeInput,
+      logoValue: logoValueInput.trim() || (logoTypeInput === 'emoji' ? '⚖️' : ''),
+      logoBgColor: logoBgColorInput,
+    };
+    onSchoolBrandingChange(updated);
+    saveConfigToSupabase('school_branding', updated);
+    alert('🎉 학교 정보 및 로고 설정이 DB에 성공적으로 저장되었습니다!');
+  };
+
+  const handleSaveThresholds = () => {
+    if (warningInput >= focusInput) {
+      alert('1단계(경고) 기준 횟수는 2단계(집중지도) 기준 횟수보다 작아야 합니다.');
+      return;
+    }
+    onThresholdChange(warningInput, focusInput);
+    saveConfigToSupabase('thresholds', {
+      warning_threshold: warningInput,
+      focus_threshold: focusInput,
+    });
+    alert(`지도 기준이 DB에 저장되었습니다!\n- 1단계 경고: ${warningInput}회\n- 2단계 집중지도: ${focusInput}회`);
+  };
+
+  const handleClassCountChangeAndSave = (grade: number, count: number) => {
+    onClassCountChange(grade, count);
+    const updatedCounts = { ...classCounts, [grade]: count };
+    saveConfigToSupabase('class_counts', updatedCounts);
+  };
+
+  const parsePromotionPreview = () => {
+    if (!promotionText.trim()) return [];
+    const lines = promotionText.split(/\r\n|\n|\r/).map((line) => line.trim()).filter((line) => line.length > 0);
+    const previewList: PromotionResult[] = [];
+
+    lines.forEach((line) => {
+      const parts = line.split(/[\t\s]+/).map((p) => p.trim()).filter((p) => p.length > 0);
+
+      if (parts.length >= 2) {
+        const oldId = parts[0];
+        const rawNewId = parts[parts.length - 1];
+
+        const matchedStudent = students.find((s) => s.id === oldId);
+        const name = matchedStudent ? matchedStudent.name : (parts.length >= 3 ? parts[1] : '(미등록)');
+
+        const isGraduated = rawNewId.includes('졸업') || rawNewId === '0';
+        const displayNewId = isGraduated ? '🎓 졸업' : rawNewId;
+
+        previewList.push({ oldId, newId: displayNewId, name });
+      }
+    });
+    return previewList;
+  };
+
+  const previewData = parsePromotionPreview();
+
+  const handleApplyPromotion = async () => {
+    if (previewData.length === 0) {
+      alert('진급 매칭 명단(이전 학번과 새 학번)을 붙여넣어 주세요.');
+      return;
+    }
+
+    setIsProcessing(true);
+    let updatedStudents = [...students];
+    const resultsLog: PromotionResult[] = [];
+
+    previewData.forEach(({ oldId, newId }) => {
+      if (newId.includes('졸업')) {
+        updatedStudents = updatedStudents.filter((s) => s.id !== oldId);
+        return;
+      }
+
+      const studentIndex = updatedStudents.findIndex((s) => s.id === oldId);
+      if (studentIndex !== -1 && newId.length >= 5) {
+        const newGrade = parseInt(newId.substring(0, 1), 10);
+        const newClass = parseInt(newId.substring(1, 3), 10);
+        const newNum = parseInt(newId.substring(3, 5), 10);
+
+        if (!isNaN(newGrade) && !isNaN(newClass) && !isNaN(newNum)) {
+          const studentName = updatedStudents[studentIndex].name;
+          const newPhotoUrl = `/photos/${newId}.jpg`;
+
+          updatedStudents[studentIndex] = {
+            ...updatedStudents[studentIndex],
+            id: newId,
+            grade: newGrade,
+            classNum: newClass,
+            number: newNum,
+            photoUrl: newPhotoUrl,
+          };
+          resultsLog.push({ oldId, newId, name: studentName });
+        }
+      }
+    });
+
+    updatedStudents.sort((a, b) => a.id.localeCompare(b.id));
+
+    try {
+      await supabase.from('students').upsert(
+        updatedStudents.map((s) => ({
+          id: s.id,
+          name: s.name,
+          grade: s.grade,
+          class_num: s.classNum,
+          number: s.number,
+          photo_url: `/photos/${s.id}.jpg`,
+        }))
+      );
+    } catch (e) {
+      console.error(e);
+    }
+
+    saveStoredStudents(updatedStudents);
+    onStudentsUpdated(updatedStudents);
+    setAppliedPromotionResults(resultsLog);
+    setIsProcessing(false);
+    alert(`🎉 진급 처리가 완료되었습니다! (이동 반영: ${resultsLog.length}명)`);
+  };
+
+  const handleDownloadRenameScript = () => {
+    if (appliedPromotionResults.length === 0) return;
+    let batContent = '@echo off\r\nchcp 65001 > nul\r\n';
+    appliedPromotionResults.forEach(({ oldId, newId }) => {
+      batContent += `if exist "${oldId}.jpg" ren "${oldId}.jpg" "${newId}.jpg"\r\n`;
+    });
+    const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '사진파일명_새학번_일괄변경.bat';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const isTransparent = !logoBgColorInput || logoBgColorInput === 'transparent';
+  const isPresetColor = PRESET_COLORS.includes(logoBgColorInput);
+
+  return (
+    <div className="w-full h-full overflow-y-auto pb-20 p-2 md:p-4 max-w-[1550px] mx-auto">
+      
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 items-stretch">
+
+        {/* 1열: 학교 정보 및 데스크톱 옵션 */}
+        <div className="flex flex-col justify-between space-y-3.5 h-full">
+          
+          <div className="bg-white border border-slate-300 rounded-2xl p-4 shadow-sm flex flex-col justify-between flex-1 space-y-4">
+            <div className="border-b border-slate-200 pb-2 shrink-0">
+              <h2 className="text-base font-black text-slate-900 flex items-center gap-1.5">
+                <span>🏛️</span> 학교 정보 및 로고 설정
+              </h2>
+            </div>
+
+            <div className="flex flex-col space-y-3.5 flex-1 justify-around">
+              <div className="space-y-1.5">
+                <span className="text-xs font-bold text-slate-800 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                  <span>🏫</span> 학교명
+                </span>
+                <input
+                  type="text"
+                  placeholder="예: 양현고"
+                  value={schoolNameInput}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSchoolNameInput(val);
+                    updateRealtimeBranding({ schoolName: val });
+                  }}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 font-bold text-xs text-slate-900 focus:outline-none focus:border-slate-600 shadow-inner"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="text-xs font-bold text-slate-800 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                  <span>🖼️</span> 로고 선택
+                </span>
+                <select
+                  value={logoTypeInput}
+                  onChange={(e) => {
+                    const newType = e.target.value as 'emoji' | 'image' | 'file';
+                    setLogoTypeInput(newType);
+                    let newVal = logoValueInput;
+                    if (newType === 'emoji' && !logoValueInput) newVal = '⚖️';
+                    setLogoValueInput(newVal);
+                    updateRealtimeBranding({ logoType: newType, logoValue: newVal });
+                  }}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 font-bold text-xs text-slate-900 focus:outline-none cursor-pointer"
+                >
+                  <option value="emoji">대표 이모지</option>
+                  <option value="image">웹 이미지(URL)</option>
+                  <option value="file">📁 직접 파일 등록</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="text-xs font-bold text-slate-800 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                  <span>🎨</span> 로고 배경색
+                </span>
+                <div className="flex items-center gap-2 w-full">
+                  <div
+                    className="w-8 h-8 rounded-xl border border-slate-400 flex items-center justify-center text-sm font-bold shrink-0 overflow-hidden shadow-inner"
+                    style={{ backgroundColor: isTransparent ? '#ffffff' : logoBgColorInput }}
+                  >
+                    {logoValueInput || '⚖️'}
+                  </div>
+                  <select
+                    value={isTransparent ? 'transparent' : isPresetColor ? logoBgColorInput : 'custom'}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val !== 'custom') {
+                        setLogoBgColorInput(val);
+                        updateRealtimeBranding({ logoBgColor: val });
+                      }
+                    }}
+                    className="flex-1 min-w-0 bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-1.5 font-bold text-xs text-slate-900 cursor-pointer"
+                  >
+                    <option value="transparent">⚪ 투명</option>
+                    <option value="#ffffff">⬜ 흰색</option>
+                    <option value="#d1fae5">🟢 에메랄드</option>
+                    <option value="#dbeafe">🔵 파란색</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={openColorPicker}
+                    className="hover:bg-slate-200 text-slate-800 font-bold px-2 py-1.5 border border-slate-300 rounded-xl text-xs cursor-pointer shrink-0"
+                  >
+                    🎨
+                  </button>
+
+                  <input
+                    ref={colorInputRef}
+                    type="color"
+                    value={logoBgColorInput.startsWith('#') ? logoBgColorInput : '#ffffff'}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setLogoBgColorInput(val);
+                      updateRealtimeBranding({ logoBgColor: val });
+                    }}
+                    className="hidden"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={handleSaveBranding}
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-2.5 rounded-xl text-xs transition-all shadow-md cursor-pointer shrink-0 mt-3"
+            >
+              💾 학교 설정 저장
+            </button>
+          </div>
+
+          <div className="bg-white border border-slate-300 rounded-2xl p-3.5 shadow-sm space-y-2 shrink-0">
+            <div className="border-b border-slate-200 pb-1.5">
+              <h2 className="text-sm font-black text-slate-900 flex items-center gap-1">
+                <span>⚙️</span> 실행 옵션 (데스크톱)
+              </h2>
+            </div>
+            <div className="space-y-2 text-xs pt-0.5">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-800">시작 시 자동 실행</span>
+                <input
+                  type="checkbox"
+                  checked={autoLaunch}
+                  onChange={(e) => handleAutoLaunchToggle(e.target.checked)}
+                  className="w-4 h-4 accent-slate-900 cursor-pointer"
+                />
+              </div>
+              <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                <span className="font-bold text-slate-800">백그라운드 시작</span>
+                <input
+                  type="checkbox"
+                  disabled={!autoLaunch}
+                  checked={startHidden}
+                  onChange={(e) => handleStartHiddenToggle(e.target.checked)}
+                  className="w-4 h-4 accent-slate-900 cursor-pointer disabled:opacity-30"
+                />
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        {/* 2열: 스마트폰 외부 접속 통합 제어 & 기준 설정 */}
+        <div className="bg-white border border-slate-300 rounded-2xl p-4 shadow-sm flex flex-col justify-between space-y-3.5 h-full">
+
+          <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 space-y-3 flex-1 flex flex-col justify-between">
+            <div className="border-b border-slate-200 pb-2 flex justify-between items-center">
+              <h2 className="text-xs font-black text-slate-900 flex items-center gap-1.5">
+                <span>🌐</span> 스마트폰 외부 접속 & 보안 제어
+              </h2>
+              <button
+                onClick={handleSaveNetworkSettings}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-2.5 py-1 rounded-lg text-xs cursor-pointer shadow-sm"
+              >
+                저장
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              {/* 1. 주소 방식 선택 */}
+              <div className="space-y-1.5">
+                <span className="font-bold text-slate-700 block">1) 접속 주소 방식 선택</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAddressType('dynamic')}
+                    className={`py-1.5 rounded-xl border font-bold cursor-pointer transition-all ${
+                      addressType === 'dynamic' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200'
+                    }`}
+                  >
+                    ⚡ 변동 주소 (TryCloudflare)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAddressType('fixed')}
+                    className={`py-1.5 rounded-xl border font-bold cursor-pointer transition-all ${
+                      addressType === 'fixed' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200'
+                    }`}
+                  >
+                    📌 고정 주소 (Named Tunnel)
+                  </button>
+                </div>
+
+                {addressType === 'fixed' && (
+                  <div className="pt-1">
+                    <input
+                      type="password"
+                      placeholder="Cloudflare 터널 토큰 키(Token Key) 입력"
+                      value={cloudflareToken}
+                      onChange={(e) => setCloudflareToken(e.target.value)}
+                      className="w-full bg-white border border-blue-300 rounded-xl px-3 py-1.5 text-xs font-mono font-bold text-slate-900 focus:outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 2. 계정 그룹별 외부 접속 개별 스위치 제어 */}
+              <div className="space-y-1.5 bg-white border border-slate-200 rounded-xl p-2.5">
+                <span className="font-bold text-slate-800 block text-[11px]">
+                  2) 계정 그룹별 외부 접속 제어 (선택)
+                </span>
+                
+                <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+                  <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-700">일반교사</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleBlockGroup('teacher')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-extrabold cursor-pointer transition-all ${
+                        blockAccess.teacher ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'
+                      }`}
+                    >
+                      {blockAccess.teacher ? '🔒 교내전용' : '🔓 허용'}
+                    </button>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-700">인성부 교사</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleBlockGroup('manager')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-extrabold cursor-pointer transition-all ${
+                        blockAccess.manager ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'
+                      }`}
+                    >
+                      {blockAccess.manager ? '🔒 교내전용' : '🔓 허용'}
+                    </button>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-700">교감/교장</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleBlockGroup('leadership')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-extrabold cursor-pointer transition-all ${
+                        blockAccess.leadership ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'
+                      }`}
+                    >
+                      {blockAccess.leadership ? '🔒 교내전용' : '🔓 허용'}
+                    </button>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-700">관리자</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleBlockGroup('admin')}
+                      className={`px-2 py-0.5 rounded text-[10px] font-extrabold cursor-pointer transition-all ${
+                        blockAccess.admin ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'
+                      }`}
+                    >
+                      {blockAccess.admin ? '🔒 교내전용' : '🔓 허용'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. 등교 지도 시간제 접속 타이머 */}
+              <div className="bg-white border border-slate-200 rounded-xl p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800">3) 등교 지도 시간제 접속 타이머</span>
+                  <input
+                    type="checkbox"
+                    checked={useTimeLimit}
+                    onChange={(e) => setUseTimeLimit(e.target.checked)}
+                    className="w-4 h-4 accent-slate-900 cursor-pointer"
+                  />
+                </div>
+
+                {useTimeLimit && (
+                  <div className="space-y-2 pt-1 border-t border-slate-100">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-bold text-slate-600">접속 허용 시간:</span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="time"
+                          value={startTime}
+                          onChange={(e) => setStartTime(e.target.value)}
+                          className="border border-slate-300 rounded px-1 py-0.5 font-bold text-xs bg-slate-50"
+                        />
+                        <span>~</span>
+                        <input
+                          type="time"
+                          value={endTime}
+                          onChange={(e) => setEndTime(e.target.value)}
+                          className="border border-slate-300 rounded px-1 py-0.5 font-bold text-xs bg-slate-50"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5 pt-1">
+                      <span className="font-bold text-slate-600 block text-[11px]">
+                        {endTime} 이후 외부 접속 제한 정책:
+                      </span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setAfterTimePolicy('block_all')}
+                          className={`py-1 rounded-lg border text-[10px] font-bold cursor-pointer ${
+                            afterTimePolicy === 'block_all' ? 'bg-rose-600 text-white border-rose-600' : 'bg-slate-50 text-slate-600'
+                          }`}
+                        >
+                          🚫 전체 차단
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAfterTimePolicy('admin_only')}
+                          className={`py-1 rounded-lg border text-[10px] font-bold cursor-pointer ${
+                            afterTimePolicy === 'admin_only' ? 'bg-purple-600 text-white border-purple-600' : 'bg-slate-50 text-slate-600'
+                          }`}
+                        >
+                          👑 관리자 예외
+                        </button>
+                      </div>
+                    </div>
+
+                    {afterTimePolicy === 'admin_only' && (
+                      <div className="flex items-center justify-between bg-purple-50 border border-purple-200 px-2 py-1 rounded-lg">
+                        <span className="text-[10px] font-bold text-purple-900">관리자 예외 스위치</span>
+                        <button
+                          type="button"
+                          onClick={() => setAdminOverrideSwitch(!adminOverrideSwitch)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-black cursor-pointer ${
+                            adminOverrideSwitch ? 'bg-purple-600 text-white' : 'bg-slate-300 text-slate-700'
+                          }`}
+                        >
+                          {adminOverrideSwitch ? '🟢 ON (허용)' : '🔴 OFF (차단)'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* 4. 학생 사진 표시 설정 */}
+              <div className="bg-white border border-slate-200 rounded-xl p-2.5 space-y-1.5">
+                <span className="font-bold text-slate-800 block text-[11px]">4) 학생 사진 표시 설정</span>
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPhotoConfigChange('always_on');
+                      saveConfigToSupabase('photo_config', 'always_on');
+                      alert('🎉 사진 표시가 [켜기]로 설정되었습니다.');
+                    }}
+                    className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                      photoConfig === 'always_on' ? 'bg-slate-900 text-white shadow-sm' : 'bg-slate-50 text-slate-700 border border-slate-200'
+                    }`}
+                  >
+                    켜기
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPhotoConfigChange('always_off');
+                      saveConfigToSupabase('photo_config', 'always_off');
+                      alert('🎉 사진 표시가 [끄기]로 설정되었습니다.');
+                    }}
+                    className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                      photoConfig === 'always_off' ? 'bg-rose-600 text-white shadow-sm' : 'bg-slate-50 text-slate-700 border border-slate-200'
+                    }`}
+                  >
+                    끄기
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPhotoConfigChange('allow_toggle');
+                      saveConfigToSupabase('photo_config', 'allow_toggle');
+                      alert('🎉 사진 표시가 [자율]로 설정되었습니다.');
+                    }}
+                    className={`py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all ${
+                      photoConfig === 'allow_toggle' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-50 text-slate-700 border border-slate-200'
+                    }`}
+                  >
+                    자율
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          {/* 학년별 총 학급 수 */}
+          <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex flex-col justify-center space-y-2 shrink-0">
+            <div className="border-b border-slate-200/60 pb-1.5">
+              <h2 className="text-xs font-black text-slate-900 flex items-center gap-1">
+                <span>🏢</span> 학년별 총 학급 수 설정
+              </h2>
+            </div>
+            <div className="grid grid-cols-3 gap-2.5 pt-0.5">
+              {[1, 2, 3].map((g) => (
+                <div key={g} className="bg-white border border-slate-300 rounded-2xl px-3 py-2 flex items-center justify-between shadow-2xs">
+                  <span className="text-xs font-bold text-slate-800 shrink-0">{g}학년</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="1"
+                      max="30"
+                      value={classCounts[g as keyof ClassCounts] ?? 1}
+                      onChange={(e) => handleClassCountChangeAndSave(g, Number(e.target.value))}
+                      className="w-11 border border-slate-300 rounded-lg text-center font-black text-xs text-slate-900 bg-slate-50 focus:bg-white focus:outline-none focus:border-emerald-500 py-0.5"
+                    />
+                    <span className="text-xs font-bold text-slate-800 shrink-0">반</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 지도 기준 횟수 */}
+          <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex flex-col justify-center space-y-2 shrink-0">
+            <div className="border-b border-slate-200/60 pb-1.5 flex justify-between items-center">
+              <h2 className="text-xs font-black text-slate-900 flex items-center gap-1">
+                <span>🎯</span> 지도 단계별 기준 횟수
+              </h2>
+              <button 
+                onClick={handleSaveThresholds} 
+                className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-3 py-1 rounded-lg text-xs cursor-pointer shadow-sm"
+              >
+                저장
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 pt-0.5">
+              <div className="bg-amber-50/80 border border-amber-300 rounded-xl px-2.5 py-1.5 flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-950 shrink-0">1단계(경고)</span>
+                <input
+                  type="number"
+                  value={warningInput}
+                  onChange={(e) => setWarningInput(Number(e.target.value))}
+                  className="w-12 border border-amber-300 rounded-lg text-center font-black text-xs bg-white focus:outline-none py-0.5"
+                />
+              </div>
+
+              <div className="bg-rose-50/80 border border-rose-300 rounded-xl px-2.5 py-1.5 flex items-center justify-between">
+                <span className="text-xs font-bold text-rose-950 shrink-0">2단계(집중)</span>
+                <input
+                  type="number"
+                  value={focusInput}
+                  onChange={(e) => setFocusInput(Number(e.target.value))}
+                  className="w-12 border border-rose-300 rounded-lg text-center font-black text-xs bg-white focus:outline-none py-0.5"
+                />
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        {/* 3열: 진급 및 수동 데이터 제어 */}
+        <div className="flex flex-col justify-between space-y-3.5 h-full">
+          
+          <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-2xl p-4 shadow-md space-y-2.5 border border-slate-700 flex flex-col justify-between">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1.5 border-b border-slate-700 pb-2">
+                <span className="text-lg">🔀</span>
+                <h2 className="text-base font-black text-white">새 학기 진급 학번 처리</h2>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed font-medium pt-1">
+                새 학기 엑셀 명단을 붙여넣어 학번 일괄 변경 및 졸업 처리를 손쉽게 진행합니다.
+              </p>
+            </div>
+            <button
+              onClick={() => setIsPromotionModalOpen(true)}
+              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-2.5 rounded-xl text-xs transition-all shadow-md cursor-pointer flex items-center justify-center gap-1.5 active:scale-[0.98]"
+            >
+              <span>🚀</span>
+              <span>진급 학번 일괄 처리창 열기</span>
+            </button>
+          </div>
+
+          <div className="bg-white border border-slate-300 rounded-2xl p-3.5 shadow-sm space-y-2 shrink-0">
+            <div className="border-b border-slate-200 pb-1.5 flex justify-between items-center">
+              <h2 className="text-base font-black text-slate-900 flex items-center gap-1.5">
+                <span>📜</span> 규정 파일 등록 (PDF)
+              </h2>
+              {rulesPdfUrl ? (
+                <span className="text-xs font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                  ✓ 등록됨
+                </span>
+              ) : (
+                <span className="text-xs font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
+                  미등록
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <label className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2 rounded-xl text-xs transition-all shadow-sm cursor-pointer text-center truncate">
+                📁 규정 PDF 파일 선택
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={handlePdfFileUpload}
+                  className="hidden"
+                />
+              </label>
+              {rulesPdfUrl && (
+                <button
+                  type="button"
+                  onClick={handleDeletePdf}
+                  className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-bold px-3 py-2 rounded-xl text-xs shrink-0 cursor-pointer transition-all"
+                >
+                  삭제
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-blue-50/60 border border-blue-200/80 rounded-2xl p-3.5 shadow-sm space-y-2 flex flex-col justify-between">
+            <div className="border-b border-blue-200/60 pb-1.5">
+              <h2 className="text-sm font-black text-blue-950 flex items-center gap-1">
+                <span>🔑</span> 학교 DB 연동 설정 변경
+              </h2>
+            </div>
+            <button
+              onClick={handleResetDbConfig}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl text-xs transition-all shadow-sm cursor-pointer flex items-center justify-center gap-1"
+            >
+              <span>⚡</span>
+              <span>DB Key 연동 해제 및 재설정하기</span>
+            </button>
+          </div>
+
+          <div className="bg-white border border-slate-300 rounded-2xl p-3.5 shadow-sm space-y-2 flex flex-col justify-between">
+            <div className="border-b border-slate-200 pb-1.5">
+              <h2 className="text-sm font-black text-slate-900 flex items-center gap-1">
+                <span>🚨</span> 데이터 운영 초기화
+              </h2>
+            </div>
+            <div className="flex gap-2 items-center justify-between">
+              <button onClick={() => { if (confirm('지도 내역을 초기화하시겠습니까?')) onResetPenalties(); }} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 rounded-xl text-xs transition-all cursor-pointer shadow-sm">
+                지도 내역 초기화
+              </button>
+              <button onClick={() => { if (confirm('전체 학생 명단을 초기화하시겠습니까?')) { saveStoredStudents([]); onStudentsUpdated([]); } }} className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-2 rounded-xl text-xs transition-all cursor-pointer shadow-sm">
+                학생 명단 초기화
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      {/* 진급 처리 모달 */}
+      {isPromotionModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-3xl p-6 max-w-4xl w-full max-h-[90vh] flex flex-col space-y-4 shadow-2xl relative">
+            <div className="flex justify-between items-center border-b border-slate-200 pb-3 shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🔀</span>
+                <h3 className="text-base font-black text-slate-900">새 학기 진급 학번 일괄 처리</h3>
+              </div>
+              <button
+                onClick={() => setIsPromotionModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 font-bold text-sm cursor-pointer p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 overflow-y-auto min-h-[350px]">
+              <div className="flex flex-col space-y-2">
+                <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                  <span>1. 엑셀 진급 명단 붙여넣기</span>
+                  <span className="text-[10px] text-slate-400 font-normal">엑셀 2~3열 복사</span>
+                </label>
+                <textarea
+                  placeholder={`[엑셀 복사/붙여넣기 예시]\n10101   20101\n10102   홍길동   20102\n30101   졸업`}
+                  value={promotionText}
+                  onChange={(e) => setPromotionText(e.target.value)}
+                  className="w-full flex-1 min-h-[260px] bg-slate-50 border border-slate-300 rounded-2xl p-3 text-xs font-mono resize-none focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex flex-col space-y-2">
+                <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                  <span>2. 실시간 매칭 검증 결과</span>
+                  <span className="text-[10px] font-bold text-blue-600">{previewData.length}명 매칭 감지</span>
+                </label>
+                
+                <div className="flex-1 min-h-[260px] max-h-[300px] overflow-y-auto border border-slate-300 rounded-2xl bg-slate-50 p-2">
+                  {previewData.length === 0 ? (
+                    <div className="text-center text-slate-400 h-full flex flex-col items-center justify-center text-xs p-4 space-y-1">
+                      <span className="text-2xl">📋</span>
+                      <span>좌측 영역에 엑셀 명단을 붙여넣으시면</span>
+                      <span>실시간 변경 미리보기가 표시됩니다.</span>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-200">
+                      {previewData.map((item, idx) => (
+                        <div key={idx} className="p-2 flex justify-between text-xs items-center hover:bg-white rounded-lg transition-colors">
+                          <span className="w-1/3 font-mono font-bold text-slate-500">{item.oldId}</span>
+                          <span className="w-1/3 text-center font-bold text-slate-900 truncate">{item.name}</span>
+                          <span className={`w-1/3 text-right font-mono font-bold ${item.newId.includes('졸업') ? 'text-rose-600' : 'text-emerald-600'}`}>
+                            ➔ {item.newId}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 border-t border-slate-200 pt-3 shrink-0">
+              <div className="w-full sm:w-auto">
+                {appliedPromotionResults.length > 0 ? (
+                  <button
+                    onClick={handleDownloadRenameScript}
+                    className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition-all shadow-sm cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <span>📂</span>
+                    <span>사진 파일명 자동 변경 스크립트 (.bat) 다운로드</span>
+                  </button>
+                ) : (
+                  <span className="text-[11px] text-slate-400 font-medium">
+                    * 진급 반영 완료 후 학생 사진 일괄 변경(.bat) 파일이 제공됩니다.
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                <button
+                  onClick={() => setIsPromotionModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={handleApplyPromotion}
+                  disabled={isProcessing || previewData.length === 0}
+                  className="px-5 py-2.5 rounded-xl text-xs font-black bg-slate-900 hover:bg-slate-800 text-white transition-all shadow-md cursor-pointer disabled:bg-slate-300 disabled:cursor-not-allowed"
+                >
+                  {isProcessing ? '⏳ 진급 반영 중...' : `🚀 진급 매칭 최종 반영하기 (${previewData.length}명)`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+export default SystemConfigTab;
