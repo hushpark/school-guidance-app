@@ -37,10 +37,13 @@ if (typeof window !== 'undefined') {
   }
 }
 
-// 1. LocalStorage에서 저장된 DB 키 가져오기
+// 1. Vercel 환경 변수(1순위) -> LocalStorage(2순위) 순으로 DB 키 가져오기
 export const getStoredSupabaseConfig = () => {
-  const url = localStorage.getItem(SUPABASE_URL_KEY) || '';
-  const key = localStorage.getItem(SUPABASE_ANON_KEY) || '';
+  const envUrl = (import.meta as any).env?.VITE_SUPABASE_URL || '';
+  const envKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+
+  const url = envUrl.trim() || localStorage.getItem(SUPABASE_URL_KEY) || '';
+  const key = envKey.trim() || localStorage.getItem(SUPABASE_ANON_KEY) || '';
   return { url, key };
 };
 
