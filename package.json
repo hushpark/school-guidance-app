@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build --base=./",
-    "build:web": "tsc -b && vite build",
+    "build:web": "vite build",
     "lint": "oxlint",
     "preview": "vite preview",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
